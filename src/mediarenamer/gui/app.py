@@ -25,7 +25,8 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComb
                                QStackedWidget, QTableView, QToolBar, QToolButton, QVBoxLayout,
                                QWidget)
 
-from .. import config
+from .. import __version__, config
+from .. import update as ota
 from ..cli import scan
 from ..journal import apply_ops, undo_last
 from ..match import MatchResult, match_all
@@ -37,7 +38,30 @@ MAX_VISIBLE = 4
 FADE_MS = 450
 
 
-# ------------------------------------------------------------------ worker
+# ------------------------------------------------------------------ workers
+
+class UpdateCheckWorker(QThread):
+    found = Signal(object)          # Update | None
+
+    def run(self) -> None:
+        self.found.emit(ota.check_latest())
+
+
+class UpdateDownloadWorker(QThread):
+    progress = Signal(int, int)     # done, total bytes
+    finished_path = Signal(object)  # Path | None
+
+    def __init__(self, upd, parent=None) -> None:
+        super().__init__(parent)
+        self.upd = upd
+
+    def run(self) -> None:
+        try:
+            path = ota.download(self.upd, progress=self.progress.emit)
+        except Exception:
+            path = None
+        self.finished_path.emit(path)
+
 
 class MatchWorker(QThread):
     done = Signal(list)
@@ -513,6 +537,11 @@ class MainWindow(QMainWindow):
         self._build_central()
         self._build_statusbar()
         self._refresh_counts()
+        self._upd_check: UpdateCheckWorker | None = None
+        self._upd_dl: UpdateDownloadWorker | None = None
+        if ota.running_frozen():
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(3000, self.check_updates)
 
     # -- UI construction
     def _build_toolbar(self) -> None:
@@ -540,6 +569,7 @@ class MainWindow(QMainWindow):
         act("Clear", self.clear)
         tb.addSeparator()
         act("Settings…", self.open_settings)
+        act("Check for updates", lambda: self.check_updates(manual=True))
 
         self.addToolBarBreak()
         opts = QToolBar("Options")
@@ -834,6 +864,51 @@ class MainWindow(QMainWindow):
                 os.environ["TMDB_API_KEY"] = self.cfg["tmdb_api_key"]
             if self.paths:
                 self.rematch_all()
+
+    # -- OTA updates
+    def check_updates(self, manual: bool = False) -> None:
+        if self._upd_check and self._upd_check.isRunning():
+            return
+        self._upd_check = UpdateCheckWorker(self)
+        self._upd_check.found.connect(lambda u: self._update_found(u, manual))
+        self._upd_check.start()
+
+    def _update_found(self, upd, manual: bool) -> None:
+        if upd is None:
+            if manual:
+                QMessageBox.information(self, "Up to date",
+                                        f"mediarenamer {__version__} is the latest version.")
+            return
+        notes = ("\n\n" + upd.notes[:600]) if upd.notes else ""
+        if not ota.running_frozen():
+            if manual:
+                QMessageBox.information(
+                    self, "Update available",
+                    f"Version {upd.version} is on GitHub (you run {__version__} from source).\n"
+                    f"Pull the repo to update.{notes}")
+            return
+        reply = QMessageBox.question(
+            self, "Update available",
+            f"mediarenamer {upd.version} is available (you have {__version__}).\n"
+            f"Download and install now? The app restarts when done.{notes}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self._upd_dl = UpdateDownloadWorker(upd, self)
+        self._upd_dl.progress.connect(
+            lambda d, t: self.statusBar().showMessage(
+                f"Downloading update… {d / 1e6:.0f}/{t / 1e6:.0f} MB" if t else
+                f"Downloading update… {d / 1e6:.0f} MB"))
+        self._upd_dl.finished_path.connect(self._update_downloaded)
+        self._upd_dl.start()
+
+    def _update_downloaded(self, path) -> None:
+        if path is None:
+            QMessageBox.warning(self, "Update failed",
+                                "The download did not finish. Try again later.")
+            return
+        ota.launch_installer(path)
+        QApplication.quit()
 
 
 def _existing_sibling(p: Path) -> Path | None:

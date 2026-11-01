@@ -4,3 +4,5 @@ __pycache__/
 build/
 dist/
 .venv/
+build_spec/
+*.spec
