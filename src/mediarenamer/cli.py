@@ -5,6 +5,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from . import config
 from .journal import apply_ops, undo_last
 from .match import MatchResult, match_all
 from .parse import COMPANION_EXTS, VIDEO_EXTS, parse_file
@@ -12,10 +13,13 @@ from .plan import build_plan
 
 
 def scan(root: Path, recursive: bool) -> list:
+    """Parse every media file under `root`. The root folder's own name counts as
+    path context, so scanning 'Severance/' still knows the show is Severance."""
     exts = VIDEO_EXTS | COMPANION_EXTS
     it = root.rglob("*") if recursive else root.glob("*")
     files = sorted(p for p in it if p.is_file() and p.suffix.casefold() in exts)
-    return [parse_file(p, root) for p in files]
+    ctx_root = root.parent if root.parent != root else root
+    return [parse_file(p, ctx_root) for p in files]
 
 
 def print_results(results: list[MatchResult], verbose: bool) -> None:
@@ -73,6 +77,8 @@ def main(argv: list[str] | None = None) -> int:
     if not root.exists():
         print(f"path not found: {root}", file=sys.stderr)
         return 2
+    cfg = config.load()
+    config.apply_env(cfg)
     files = scan(root, args.recursive)
     if not files:
         print("no media files found")
@@ -81,11 +87,17 @@ def main(argv: list[str] | None = None) -> int:
     threshold = "REVIEW" if (args.cmd == "apply" and args.accept_review) else "AUTO"
     accepted = [r for r in results
                 if r.status == "AUTO" or (threshold == "REVIEW" and r.status == "REVIEW")]
-    ops = build_plan(accepted, output=args.output)
+    naming = dict(prefer_original=bool(cfg.get("prefer_original_titles")),
+                  tv_scheme=cfg.get("tv_scheme", "plex"), movie_scheme=cfg.get("movie_scheme", "filebot"))
+    roots = [root] if (root.is_dir() and cfg.get("rename_folders", True)) else []
+    ops = build_plan(accepted, output=args.output, rename_roots=roots, **naming)
     # annotate new names on everything matched (for display), not just accepted
     build_plan([r for r in results if r.status != "UNMATCHED" and r.new_name is None],
-               output=args.output)
+               output=args.output, **naming)
     print_results(results, args.verbose)
+    for op in ops:
+        if op.result is None:
+            print(f"[FOLDER] {op.src.name}  ->  {op.dst.name}")
 
     auto = sum(1 for r in results if r.status == "AUTO")
     review = sum(1 for r in results if r.status == "REVIEW")

@@ -23,10 +23,26 @@ Design principles:
    titles search TMDb first, which carries original and alternative titles,
    with TVmaze as the second opinion; Latin titles do the reverse.
 
-## Usage
+## Desktop app
 
 ```
-python -m mediarenamer match  <path> [-r] [-v] [--kind tv|movie|auto] [--season N]
+pip install PySide6          # once
+python -m mediarenamer.gui   # or: mediarenamer-gui
+```
+
+Drop folders or files onto the window. Every file gets a row with its status
+(AUTO, REVIEW, UNMATCHED), the proposed name, the confidence, and a checkbox.
+AUTO rows are pre-ticked; REVIEW rows wait for you. Selecting a row shows the
+full parse and match trace underneath. Right-click to accept or reject rows,
+re-match a selection as TV / anime / movie, force a season, or open the
+folder. Apply renames the ticked rows and journals them; Undo reverts the
+last batch. Settings holds the TMDb key, the original-language title
+preference, recursive scanning, and an optional output folder to organize into.
+
+## Command line
+
+```
+python -m mediarenamer match  <path> [-r] [-v] [--kind tv|anime|movie|auto] [--season N]
 python -m mediarenamer apply  <path> [-r] [--yes] [--accept-review]
 python -m mediarenamer undo
 ```

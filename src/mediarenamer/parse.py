@@ -376,6 +376,14 @@ def parse_file(path: Path, root: Path) -> ParsedFile:
         score += 0.15
     pf.anime_score = min(1.0, score)
     pf.groups = brackets
+    if pf.release_group is None:
+        # scene style: '...x264-WiKi', '...WEB-DL-NTb' -> trailing group after the last '-'
+        tail = BRACKET_RE.sub("", unicodedata.normalize("NFKC", stem)).strip()
+        if pf.is_companion:
+            tail = re.sub(r"\.[A-Za-z-]{2,7}$", "", tail)   # 'x264-WiKi.chs' -> 'x264-WiKi'
+        m = re.search(r"-([A-Za-z][A-Za-z0-9]{1,15})$", tail)
+        if m and m.group(1).casefold() not in RELEASE_TAGS and not STOP_RE.match(m.group(1)):
+            pf.release_group = m.group(1)
 
     pf.trace.append(f"clean name: '{clean}'")
     if pf.title:

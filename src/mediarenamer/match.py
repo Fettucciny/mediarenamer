@@ -54,11 +54,15 @@ class MatchResult:
     trace: list[str] = field(default_factory=list)
     # tv fields
     show: str | None = None
+    show_original: str | None = None   # original-language title when the database has one
+    show_year: int | None = None
+    show_ids: dict = field(default_factory=dict)   # {'tmdb': 123, 'tvdb': 456, 'anilist': 789}
     season: int | None = None
     episode: int | None = None
     episode_title: str | None = None
     # movie fields
     movie_title: str | None = None
+    movie_original: str | None = None
     movie_year: int | None = None
     tmdb_id: int | None = None
 
@@ -325,6 +329,13 @@ def match_tv_group(group: list[ParsedFile], season_override: int | None,
             continue
         ep = by_se[se]
         r.show, r.season, r.episode = top.name, se[0], se[1]
+        r.show_original = top.original_name or None
+        r.show_year = top.year
+        r.show_ids = {k: v for k, v in {
+            "tmdb": top.id if top.source == "TMDb" else None,
+            "tvmaze": top.id if top.source == "TVmaze" else None,
+            "tvdb": top.externals.get("thetvdb"), "imdb": top.externals.get("imdb"),
+        }.items() if v}
         r.episode_title = ep.name
         factor = 0.95 if h.source == "bare" else 1.0   # E01 / 第01集 are explicit markers
         r.confidence = max(0.0, min(1.0, (base_conf - penalty) * factor))
@@ -375,6 +386,7 @@ def match_movie(f: ParsedFile) -> MatchResult:
             year_ok = (not years) or (id_hit.year in years)
             if sim >= 0.6 and year_ok:
                 r.movie_title, r.movie_year, r.tmdb_id = id_hit.title, id_hit.year, id_hit.id
+                r.movie_original = id_hit.original_title or None
                 r.confidence = 0.95
                 r.trace.append(f"ID evidence confirmed by name/year: '{id_hit.title}' ({id_hit.year})")
                 return r
@@ -413,6 +425,7 @@ def match_movie(f: ParsedFile) -> MatchResult:
         return r
     s, c = best
     r.movie_title, r.movie_year, r.tmdb_id = c.title, c.year, c.id
+    r.movie_original = c.original_title or None
     conf = min(1.0, 0.35 + s)
     r.trace.append(f"best: '{c.title}' ({c.year}) tmdb-{c.id} score={s:.2f}")
     best_sim = max(name_sim(q, t) for q in queries for t in (c.title, c.original_title))
@@ -510,8 +523,9 @@ def match_all(files: list[ParsedFile], *, kind: str = "auto",
                     (v for (s, e), v in by_ep.items() if e == hint.episode), None)
             if twin:
                 cr.__dict__.update({k: v for k, v in twin.__dict__.items()
-                                    if k in ("show", "season", "episode", "episode_title",
-                                             "movie_title", "movie_year", "tmdb_id",
+                                    if k in ("show", "show_original", "show_year", "show_ids",
+                                             "season", "episode", "episode_title",
+                                             "movie_title", "movie_original", "movie_year", "tmdb_id",
                                              "confidence", "kind")})
                 cr.trace = ["companion: inherits match from video file"]
             else:

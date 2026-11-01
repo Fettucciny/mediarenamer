@@ -55,6 +55,14 @@ def find_by_imdb(imdb_id: str) -> MovieHit | None:
     return hits[0] if hits else None
 
 
+def movie_director(tmdb_id: int) -> str | None:
+    d = get_json(f"{BASE}/movie/{tmdb_id}/credits?api_key={_key()}")
+    for c in (d or {}).get("crew") or []:
+        if c.get("job") == "Director" and c.get("name"):
+            return c["name"]
+    return None
+
+
 # ------------------------------------------------------------------ TV
 
 @dataclass

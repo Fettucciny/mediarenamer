@@ -17,10 +17,13 @@ _TRAILING_SEASON = re.compile(
     r"\d{1,2}(?:st|nd|rd|th)\s+season|final\s+season|cour\s+\d)\s*$")
 
 
-def _series_name(root: anilist.Anime) -> str:
-    name = root.display_name
+def _series_name_of(name: str) -> str:
     stripped = _TRAILING_SEASON.sub("", name).strip(" -:")
     return stripped or name
+
+
+def _series_name(root: anilist.Anime) -> str:
+    return _series_name_of(root.display_name)
 
 
 def _chain(top: anilist.Anime, trace: list[str]) -> list[anilist.Anime]:
@@ -184,6 +187,10 @@ def match_anime_group(group: list[ParsedFile], season_override: int | None) -> l
             r.confidence = min(base, REVIEW - 0.05)
             continue
         r.show = series
+        r.show_original = _series_name_of(chain[0].romaji or chain[0].native) if (
+            chain[0].romaji or chain[0].native) else None
+        r.show_year = chain[0].year
+        r.show_ids = {k: v for k, v in {"anilist": chain[0].id, "mal": chain[0].mal_id}.items() if v}
         r.season = chain.index(entry) + 1 if entry.id in chain_ids else (top_index + 1)
         r.episode = ep
         r.episode_title = titles_for(entry).get(ep)
