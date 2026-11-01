@@ -108,11 +108,11 @@ def install(silent: bool) -> None:
         pass
     shortcuts(create=True)
     register(version)
-    if silent:
-        subprocess.Popen([str(INSTALL_DIR / f"{APP}.exe")], close_fds=True)
-    else:
+    if not silent:
         msg(f"{APP} {version} installed to\n{INSTALL_DIR}")
-        subprocess.Popen([str(INSTALL_DIR / f"{APP}.exe")], close_fds=True)
+    # launch through explorer so the app runs unelevated (an elevated window
+    # cannot receive drag and drop from Explorer)
+    subprocess.Popen(["explorer.exe", str(INSTALL_DIR / f"{APP}.exe")], close_fds=True)
 
 
 def uninstall() -> None:
@@ -121,7 +121,7 @@ def uninstall() -> None:
     unregister()
     # this exe lives inside INSTALL_DIR; delete via a detached cmd after exit
     cmd = f'ping -n 3 127.0.0.1 >nul & rmdir /s /q "{INSTALL_DIR}"'
-    subprocess.Popen(["cmd", "/c", cmd], creationflags=0x08000208)
+    subprocess.Popen(["cmd", "/c", cmd], creationflags=0x08000200)
     msg(f"{APP} removed.")
 
 

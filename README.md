@@ -23,6 +23,18 @@ Design principles:
    titles search TMDb first, which carries original and alternative titles,
    with TVmaze as the second opinion; Latin titles do the reverse.
 
+## Install (Windows)
+
+Download `MediaRenamer-Setup.exe` from the [latest release](https://github.com/Fettucciny/mediarenamer/releases/latest)
+and run it. It installs to `C:\Program Files\MediaRenamer` and creates Start
+Menu and Desktop shortcuts. The app checks this repository's releases on
+startup and offers to update itself; `Setup.exe /uninstall` removes it.
+
+Releases are built with `python tools/build_installer.py` and published with
+`gh release create v<version> dist/MediaRenamer-Setup.exe`. Bump the version
+in both `pyproject.toml` and `src/mediarenamer/__init__.py` first; installed
+apps then pick the update up over the air.
+
 ## Desktop app
 
 ```

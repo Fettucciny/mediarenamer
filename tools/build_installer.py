@@ -26,7 +26,7 @@ def run(*cmd: str) -> None:
 def main() -> int:
     run(sys.executable, "-m", "PyInstaller", "--noconfirm", "--windowed",
         "--name", "MediaRenamer", "--collect-submodules", "mediarenamer",
-        "-p", "src", "--specpath", "build_spec", "src/mediarenamer/gui/__main__.py")
+        "-p", "src", "--specpath", "build_spec", "tools/entry_gui.py")
 
     app_dir = ROOT / "dist" / "MediaRenamer"
     app_zip = ROOT / "build" / "app.zip"
