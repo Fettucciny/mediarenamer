@@ -34,7 +34,7 @@ RESOLUTION_NUMBERS = {"480", "576", "720", "1080", "2160", "4320"}
 STRUCTURAL_FOLDERS = re.compile(
     r"(?i)^(season[ ._-]?\d+|s\d{1,2}|specials?|extras?|featurettes?|samples?|"
     r"subs?|subtitles?|downloads?|torrents?|complete|collection|videos?|movies?|"
-    r"films?|tv|series|anime|media|new folder|temp|tmp|incoming|unsorted|"
+    r"films?|tv|series|anime|media|new folder|temp|tmp|incoming|unsorted|misc|other|"
     r"字幕|caseb|bdmv|video_ts)$")
 
 YEAR_TOKEN = re.compile(r"(?<!\d)((?:19|20)\d\d)(?!\d)")
@@ -66,8 +66,22 @@ NXNN_RE = re.compile(r"(?i)(?<![a-z0-9(])(\d{1,2})x(\d{2,3})(?![0-9])")
 EXX_RE = re.compile(r"(?i)(?<![a-z0-9])(?:e|ep|episode)[ ._]?(\d{1,3})(?![0-9])")
 BARE_NUM_RE = re.compile(r"(?<![\w(])(\d{1,3})(?:v\d)?(?![\w)])")
 BRACKET_RE = re.compile(r"\[[^\]]*\]|\{[^}]*\}")
-ID_RE = re.compile(r"(?i)\{?(tmdb|tvdb|imdb)[-=:]((?:tt)?\d+)\}?")
+ID_RE = re.compile(r"(?i)\{?(tmdb|tvdb|imdb|anilist|mal)[-=:]((?:tt)?\d+)\}?")
 IMDB_RE = re.compile(r"(?i)(?<![a-z0-9])(tt\d{7,8})(?![0-9])")
+CRC_RE = re.compile(r"^[A-Fa-f0-9]{8}$")
+CJK_RE = re.compile(r"[぀-ヿ㐀-䶿一-鿿]")
+# 'Frieren 2nd Season - 05', 'Show Season 2 - 05', 'Show S2 - 05'
+SEASON_WORD_RE = re.compile(
+    r"(?i)(?<![a-z0-9])(?:(\d{1,2})(?:st|nd|rd|th)[ ]+season|season[ ]+(\d{1,2})|s(\d{1,2}))(?![a-z0-9])")
+KNOWN_ANIME_GROUPS = {
+    "subsplease", "erai-raws", "horriblesubs", "judas", "ember", "asw", "skymoon-raws",
+    "nekomoe kissaten", "lolihouse", "ani", "sakurato", "lilith-raws", "nc-raws", "vcb-studio",
+    "commie", "kametsu", "yameii", "tsundere-raws", "ohys-raws", "moozzi2", "beatrice-raws",
+    "anime time", "reinforce", "gjm", "doki", "coalgirls", "underwater", "fff", "vivid",
+    "damedesuyo", "sallysubs", "exiled-destiny", "utw", "chihiro", "comicat", "romanticat",
+    "sweetsub", "kamigami", "dmhy", "mingy", "haruhana", "sbsub", "billion meta lab",
+    "nan-raws", "hysub", "ktxp", "jibaketa", "orion", "seed-raws", "trix", "varyg", "toonshub",
+}
 
 
 def normalize(s: str) -> str:
@@ -98,6 +112,8 @@ class ParsedFile:
     ids: dict[str, str] = field(default_factory=dict)    # {'tvdb': '123', 'imdb': 'tt...'}
     groups: list[str] = field(default_factory=list)      # bracket tags, e.g. release group
     is_companion: bool = False
+    release_group: str | None = None                     # leading [Group] tag
+    anime_score: float = 0.0                             # 0..1 evidence of fansub-style naming
     trace: list[str] = field(default_factory=list)
 
 
@@ -227,6 +243,32 @@ def parse_file(path: Path, root: Path) -> ParsedFile:
     pf.title_full = _title_from(clean, strong_cut)
     if is_year(pf.title) and len(pf.years) > 1:
         pf.years.remove(int(pf.title))     # '2012.2009': the title is 2012, the year is 2009
+
+    # season words next to bare numbers: 'Frieren 2nd Season - 05' -> S2 E5
+    if pf.episode_hints and all(h.source == "bare" for h in pf.episode_hints):
+        sw = SEASON_WORD_RE.search(pf.title)
+        if sw:
+            season_no = int(next(g for g in sw.groups() if g))
+            for h in pf.episode_hints:
+                h.season = season_no
+                h.confidence = 0.65
+            pf.title = " ".join(SEASON_WORD_RE.sub(" ", pf.title).split()).strip(" -")
+
+    # anime-style naming evidence
+    score = 0.0
+    if stem.lstrip().startswith("[") and brackets:
+        pf.release_group = brackets[0].strip()
+        score += 0.4 if pf.release_group.casefold() in KNOWN_ANIME_GROUPS else 0.25
+    if any(CRC_RE.match(b.strip()) for b in brackets):
+        score += 0.3
+    if CJK_RE.search(stem) or any(CJK_RE.search(t) for t in pf.folder_titles[:1]):
+        score += 0.35
+    if re.search(r"(?i)\d(?:st|nd|rd|th)\s+season", clean):
+        score += 0.3          # '2nd Season' is anime naming convention
+    if pf.episode_hints and pf.episode_hints[0].source == "bare" and (
+            pf.release_group or CJK_RE.search(stem)):
+        score += 0.15
+    pf.anime_score = min(1.0, score)
     pf.groups = brackets
 
     pf.folder_titles, pf.folder_years, folder_ids = parse_path_context(path, root)
@@ -244,6 +286,9 @@ def parse_file(path: Path, root: Path) -> ParsedFile:
         pf.trace.append(f"episode hint: {h.source} s={h.season} e={h.episode} ({h.confidence})")
     if pf.ids:
         pf.trace.append(f"ids: {pf.ids}")
+    if pf.anime_score:
+        pf.trace.append(f"anime-style naming score: {pf.anime_score:.2f}"
+                        + (f" (group '{pf.release_group}')" if pf.release_group else ""))
     return pf
 
 

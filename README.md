@@ -10,6 +10,12 @@ Design principles:
 4. **IDs are evidence, not verdicts.** `{tvdb-123}` tags and sibling NFO files are validated against name and year evidence. A contradiction flags the file for review instead of silently winning.
 5. **Every decision is explained.** Each file gets a confidence and a trace. Nothing is dropped silently; `-v` shows why.
 
+6. **Anime is its own domain.** Fansub-style names (`[Group] Title - 05 [CRC]`, CJK
+   titles, `2nd Season`) route to AniList, which knows the aliases that
+   general TV databases miss. Each AniList season is one entry linked by
+   sequel relations; an episode number larger than the entry walks that chain,
+   so `Jujutsu Kaisen - 30` becomes S02E06 with the reasoning shown.
+
 ## Usage
 
 ```
@@ -20,5 +26,6 @@ python -m mediarenamer undo
 
 `match` is always a dry run. `apply` performs renames and journals them for `undo`.
 
-Data sources: TVmaze for TV (no API key needed), TMDb for movies
-(set `TMDB_API_KEY`; free key from https://www.themoviedb.org/settings/api).
+Data sources: TVmaze for TV and AniList for anime (no API key needed),
+Jikan for anime episode titles (optional, skipped when unreachable), TMDb for
+movies (set `TMDB_API_KEY`; free key from https://www.themoviedb.org/settings/api).

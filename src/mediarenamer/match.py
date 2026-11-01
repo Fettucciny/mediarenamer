@@ -26,12 +26,16 @@ def name_sim(a: str, b: str) -> float:
         return 0.0
     if na == nb:
         return 1.0
-    ta, tb = set(na.split()), set(nb.split())
+    la, lb = na.split(), nb.split()
+    ta, tb = set(la), set(lb)
     if ta <= tb or tb <= ta:
         # subset match, discounted by how much longer the other title is:
         # 'Three Body' inside 'Three Housewives and a Body' should not score like
-        # 'Monkey King' inside 'The Monkey King'
-        contain = 0.88 * (min(len(ta), len(tb)) / max(len(ta), len(tb))) ** 0.6
+        # 'Monkey King' inside 'The Monkey King'. A prefix ('Frieren' for
+        # 'Frieren Beyond Journeys End') is how people abbreviate, so discount less.
+        short, long_ = (la, lb) if len(la) <= len(lb) else (lb, la)
+        is_prefix = long_[:len(short)] == short
+        contain = 0.88 * (len(short) / len(long_)) ** (0.3 if is_prefix else 0.6)
     else:
         contain = 0.0
     ratio = difflib.SequenceMatcher(None, na, nb).ratio()
@@ -77,14 +81,24 @@ def group_files(files: list[ParsedFile]) -> list[list[ParsedFile]]:
     return list(groups.values())
 
 
-def classify_group(group: list[ParsedFile], forced: str) -> str:
-    if forced in ("tv", "movie"):
+def anime_evidence(group: list[ParsedFile]) -> float:
+    score = max((f.anime_score for f in group), default=0.0)
+    if any(f.is_companion and f.path.suffix.casefold() in (".ass", ".ssa") for f in group):
+        score += 0.2   # styled subtitles travel with fansubs
+    return min(1.0, score)
+
+
+def classify_group(group: list[ParsedFile], forced: str, folder_anime: float = 0.0) -> str:
+    if forced in ("tv", "movie", "anime"):
         return forced
     strong = sum(1 for f in group if any(h.confidence >= 0.7 for h in f.episode_hints))
     bare = sum(1 for f in group if any(h.source == "bare" for h in f.episode_hints))
+    is_anime = max(anime_evidence(group), folder_anime) >= 0.5
     if strong * 2 >= len(group) and strong:
-        return "tv"
+        return "anime" if is_anime else "tv"
     if bare:
+        if is_anime:
+            return "anime"
         nums = sorted({h.episode for f in group for h in f.episode_hints if h.source == "bare"})
         # several small sequential-ish numbers -> almost certainly episodes
         if len(nums) >= 2 and nums[-1] - nums[0] <= len(nums) * 3 and nums[-1] <= 300:
@@ -368,27 +382,68 @@ def match_movie(f: ParsedFile) -> MatchResult:
 
 # ---------------------------------------------------------------- entry point
 
+_LANG_SUFFIX = re.compile(r"(?i)\.(chs|cht|sc|tc|eng?|en|jpn?|ja|zh|zh-hans|zh-hant|forced|sdh)$")
+
+
+def _companion_key(p: Path) -> str:
+    """'Show - 01.chs' and 'Show - 01' pair up."""
+    return _LANG_SUFFIX.sub("", p.stem).casefold()
+
+
 def match_all(files: list[ParsedFile], *, kind: str = "auto",
               season: int | None = None) -> list[MatchResult]:
+    from .anime import match_anime_group
+
+    def merge(primary: list[MatchResult], alt: list[MatchResult], note: str) -> list[MatchResult]:
+        out_: list[MatchResult] = []
+        for a, b in zip(primary, alt):
+            if b.confidence > a.confidence:
+                b.trace = a.trace + [note] + b.trace
+                out_.append(b)
+            else:
+                out_.append(a)
+        return out_
+
     out: list[MatchResult] = []
-    for group in group_files(files):
+    groups = group_files(files)
+    # folder-level anime evidence: 'Frieren 2nd Season - 05' next to fansub files is anime too
+    folder_anime: dict[str, float] = defaultdict(float)
+    for g in groups:
+        key = str(g[0].path.parent).casefold()
+        folder_anime[key] = max(folder_anime[key], anime_evidence(g))
+    for group in groups:
         videos = [f for f in group if not f.is_companion]
         companions = [f for f in group if f.is_companion]
-        gkind = classify_group(videos or group, kind)
-        if gkind in ("tv", "tv?"):
+        gkind = classify_group(videos or companions, kind,
+                               folder_anime[str(group[0].path.parent).casefold()])
+        if gkind == "anime":
+            res = match_anime_group(videos or group, season)
+            if all(r.confidence < REVIEW and r.show is None for r in res):
+                # AniList knew nothing; a western show with fansub-style naming
+                res = merge(res, match_tv_group(videos or group, season, soft=False),
+                            "— fell back to TV provider —")
+            gkind = "tv"
+        elif gkind in ("tv", "tv?"):
             res = match_tv_group(videos or group, season, soft=(gkind == "tv?"))
+            if kind == "auto" and all(r.confidence < REVIEW for r in res):
+                # TV provider had nothing convincing; maybe it is anime without a group tag
+                res = merge(res, match_anime_group(videos or group, season),
+                            "— TV weak, tried anime provider —")
+            gkind = "tv"
         else:
             res = [match_movie(f) for f in (videos or group)]
-        # companions inherit the match of the video with the same episode/stem
+        # companions inherit the match of the video with the same stem, else same episode
         by_ep: dict = {}
+        by_stem: dict[str, MatchResult] = {}
         for r in res:
+            by_stem[_companion_key(r.file.path)] = r
             if r.kind == "tv" and r.episode is not None:
                 by_ep[(r.season, r.episode)] = r
         for comp in companions:
             cr = MatchResult(file=comp, kind=gkind if gkind != "tv?" else "tv")
             hint = max(comp.episode_hints, key=lambda h: h.confidence, default=None)
-            twin = None
-            if hint and by_ep:
+            twin = by_stem.get(_companion_key(comp.path))
+            if twin is None and hint and by_ep:
                 twin = by_ep.get((hint.season, hint.episode)) or next(
                     (v for (s, e), v in by_ep.items() if e == hint.episode), None)
             if twin:

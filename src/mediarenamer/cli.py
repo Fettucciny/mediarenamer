@@ -22,7 +22,8 @@ def print_results(results: list[MatchResult], verbose: bool) -> None:
     for r in sorted(results, key=lambda r: str(r.file.path)):
         name = r.file.path.name
         if r.status == "UNMATCHED":
-            reason = r.trace[-1] if r.trace else "no evidence"
+            flagged = [t for t in r.trace if t.startswith("!")]
+            reason = flagged[0] if flagged else (r.trace[-1] if r.trace else "no evidence")
             print(f"[UNMATCHED] {name}\n            reason: {reason}")
         else:
             target = r.new_name or "(name unchanged)"
@@ -48,7 +49,7 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("path", type=Path)
         p.add_argument("-r", "--recursive", action="store_true")
         p.add_argument("-v", "--verbose", action="store_true")
-        p.add_argument("--kind", choices=["auto", "tv", "movie"], default="auto")
+        p.add_argument("--kind", choices=["auto", "tv", "anime", "movie"], default="auto")
         p.add_argument("--season", type=int, default=None,
                        help="force the season for bare episode numbers")
         p.add_argument("--output", type=Path, default=None,

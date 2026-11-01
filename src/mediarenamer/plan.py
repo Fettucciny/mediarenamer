@@ -14,6 +14,7 @@ MOVIE_FORMAT = "{title}{year_part}"
 
 
 def sanitize(name: str) -> str:
+    name = re.sub(r"\s*:\s*", " - ", name)   # 'Frieren: Beyond' -> 'Frieren - Beyond'
     name = ILLEGAL.sub("", name)
     name = re.sub(r"\s+", " ", name).strip(" .")
     return name or "untitled"
