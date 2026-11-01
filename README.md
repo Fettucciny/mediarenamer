@@ -16,6 +16,13 @@ Design principles:
    sequel relations; an episode number larger than the entry walks that chain,
    so `Jujutsu Kaisen - 30` becomes S02E06 with the reasoning shown.
 
+7. **Chinese, Japanese and Korean conventions are native.** `第01集`, `第2季`,
+   `第二季`, `1화`, `시즌2`, `第1話`, `#01`, `2期`, full-width brackets and
+   `【site】` watermarks, glued tags like `1080P国语中字`, sequel digits such as
+   `庆余年2` meaning season 2, and `Season 2` / `第2季` folders all parse. CJK
+   titles search TMDb first, which carries original and alternative titles,
+   with TVmaze as the second opinion; Latin titles do the reverse.
+
 ## Usage
 
 ```

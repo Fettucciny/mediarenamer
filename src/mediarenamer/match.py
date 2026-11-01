@@ -10,11 +10,13 @@ from __future__ import annotations
 import difflib
 import re
 from collections import Counter, defaultdict
+from datetime import date
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .parse import ParsedFile, normalize, read_nfo_ids
-from .providers import tmdb, tvmaze
+from .parse import ParsedFile, has_cjk, normalize, read_nfo_ids
+from .providers import tmdb
+from .tvsources import TMDB_TV, TVMAZE, ShowCand
 
 AUTO = 0.80
 REVIEW = 0.55
@@ -132,22 +134,43 @@ def _group_queries(group: list[ParsedFile]) -> list[str]:
         t = folder.most_common(1)[0][0]
         if normalize(t) not in {normalize(x) for x in out}:
             out.append(t)
-    return out
+    # mixed-script names ('오징어 게임 Squid Game') also search per script
+    expanded: list[str] = []
+    for q in out:
+        for v in _title_variants(q, ""):
+            if normalize(v) not in {normalize(x) for x in expanded}:
+                expanded.append(v)
+    return expanded[:5]
 
 
-def _score_show(cand: tvmaze.Show, queries: list[str], years: set[int],
-                ids: dict[str, str], trace: list[str]) -> float:
-    best_q = max((name_sim(q, cand.name) for q in queries), default=0.0)
+def _name_q(cand: ShowCand, queries: list[str]) -> float:
+    return max((name_sim(q, n) for q in queries for n in cand.names), default=0.0)
+
+
+def _score_show(cand: ShowCand, queries: list[str], years: set[int],
+                ids: dict[str, str], trace: list[str], wanted: set[int] | None = None) -> float:
+    best_q = _name_q(cand, queries)
     score = 0.6 * best_q
     if best_q >= 0.99:
         score += 0.15
         trace.append("  + exact title match")
-    if cand.premiered_year is not None and years:
-        if cand.premiered_year in years:
+    if years:
+        # a year in a TV file name usually names the season's air year, not the premiere
+        known = {cand.year} | {y for *_, y in (cand.seasons or []) if y}
+        known.discard(None)
+        if years & known:
+            trace.append(f"  + year {sorted(years & known)[0]} matches premiere or a season")
             score += 0.25
-            trace.append(f"  + year {cand.premiered_year} confirmed by name/path")
+        elif cand.year is not None and all(y < cand.year or y > cand.year + 25 for y in years):
+            score -= 0.10   # before the show existed: contradiction
+    if wanted and cand.seasons is not None:
+        have = {n for n, *_ in cand.seasons}
+        if wanted <= have:
+            score += 0.08
+            trace.append(f"  + has season {sorted(wanted)}")
         else:
-            score -= 0.10
+            score -= 0.20
+            trace.append(f"  - lacks season {sorted(wanted - have)}")
     if ids.get("tvdb") and str(cand.externals.get("thetvdb")) == str(ids["tvdb"]):
         score += 0.40
         trace.append("  + tvdb id matches path tag")
@@ -158,7 +181,7 @@ def _score_show(cand: tvmaze.Show, queries: list[str], years: set[int],
 
 
 def match_tv_group(group: list[ParsedFile], season_override: int | None,
-                   soft: bool) -> list[MatchResult]:
+                   soft: bool, source=TVMAZE) -> list[MatchResult]:
     results = [MatchResult(file=f, kind="tv") for f in group]
     queries = _group_queries(group)
     years = _year_evidence(group)
@@ -166,19 +189,21 @@ def match_tv_group(group: list[ParsedFile], season_override: int | None,
     for f in group:
         ids.update({k: v for k, v in read_nfo_ids(f.path).items() if k not in ids})
 
-    gtrace: list[str] = [f"queries: {queries}", f"year evidence: {sorted(years) or 'none'}"]
+    gtrace: list[str] = [f"[{source.label}] queries: {queries}",
+                         f"year evidence: {sorted(years) or 'none'}"]
 
-    candidates: dict[int, tvmaze.Show] = {}
+    candidates: dict[int, ShowCand] = {}
+    id_hit: ShowCand | None = None
     # ID evidence first — but validated, never a verdict
     if ids.get("tvdb"):
-        hit = tvmaze.lookup_by_tvdb(ids["tvdb"])
-        if hit:
-            candidates[hit.id] = hit
-            gtrace.append(f"tvdb-{ids['tvdb']} resolves to '{hit.name}'")
+        id_hit = source.lookup_tvdb(ids["tvdb"])
+        if id_hit:
+            candidates[id_hit.id] = id_hit
+            gtrace.append(f"tvdb-{ids['tvdb']} resolves to '{id_hit.name}'")
         else:
             gtrace.append(f"tvdb-{ids['tvdb']} is a dead ID — ignored, using name evidence")
     for q in queries:
-        for s in tvmaze.search_shows(q):
+        for s in source.search(q):
             candidates.setdefault(s.id, s)
 
     if not candidates:
@@ -186,22 +211,39 @@ def match_tv_group(group: list[ParsedFile], season_override: int | None,
             r.trace = gtrace + ["no search results for any query"]
         return results
 
-    scored = []
-    for c in candidates.values():
-        tr: list[str] = []
-        s = _score_show(c, queries, years, ids, tr)
-        scored.append((s, c, tr))
-    scored.sort(key=lambda t: -t[0])
+    wanted = {h.season for f in group for h in f.episode_hints if h.season is not None}
+    if season_override is not None:
+        wanted = {season_override}
+
+    def score_all() -> list:
+        out = []
+        for c in candidates.values():
+            tr: list[str] = []
+            out.append((_score_show(c, queries, years, ids, tr, wanted), c, tr))
+        out.sort(key=lambda t: -t[0])
+        return out
+
+    scored = score_all()
+    # Sources with alternative titles / external ids: enrich the leaders and rescore,
+    # so an alias query ('Hyakkano') can become an exact match.
+    if any(not c.enriched for _, c, _ in scored[:4]) and source is not TVMAZE:
+        for _, c, _ in scored[:4]:
+            source.enrich(c)
+        scored = score_all()
     top_s, top, top_tr = scored[0]
     margin = top_s - scored[1][0] if len(scored) > 1 else 1.0
-    top_name_q = max((name_sim(q, top.name) for q in queries), default=0.0)
-    gtrace.append(f"best show: '{top.name}' ({top.premiered_year}) score={top_s:.2f} margin={margin:.2f}")
+    top_name_q = _name_q(top, queries)
+    gtrace.append(f"best show: '{top.name}' ({top.year}) score={top_s:.2f} margin={margin:.2f}")
+    if top.original_name and top.original_name != top.name:
+        gtrace.append(f"  original title: '{top.original_name}'")
     gtrace.extend(top_tr)
-    if ids.get("tvdb") and str(top.externals.get("thetvdb")) not in (str(ids["tvdb"]), "None") \
-            and tvmaze.lookup_by_tvdb(ids["tvdb"]):
+    if id_hit and top.id != id_hit.id:
         gtrace.append("! path ID and name evidence disagree — review")
 
-    eps = tvmaze.episodes(top.id)
+    seasons_needed = {h.season for f in group for h in f.episode_hints if h.season is not None}
+    if any(h.season is None for f in group for h in f.episode_hints) or season_override is not None:
+        seasons_needed = None   # bare numbers: need every season for the cardinality fit
+    eps = source.episodes(top, seasons_needed)
     by_se = {(e.season, e.number): e for e in eps}
     season_counts: dict[int, int] = Counter()
     for e in eps:
@@ -222,9 +264,17 @@ def match_tv_group(group: list[ParsedFile], season_override: int | None,
             by_year = [s for s in fits if any(
                 by_se[(s, n)].airdate[:4].isdigit() and int(by_se[(s, n)].airdate[:4]) in years
                 for n in bare_nums if (s, n) in by_se)]
+            today = date.today().isoformat()
+            aired = [s for s in fits if all(
+                (s, n) in by_se and by_se[(s, n)].airdate and by_se[(s, n)].airdate <= today
+                for n in bare_nums)]
             if len(by_year) == 1:
                 inferred_season = by_year[0]
                 gtrace.append(f"seasons {fits} all fit; year evidence selects season {inferred_season}")
+            elif len(aired) == 1:
+                inferred_season = aired[0]
+                gtrace.append(f"seasons {fits} all fit; only season {inferred_season} has aired "
+                              f"these episodes")
             else:
                 inferred_season = fits[0]
                 season_conf_penalty = 0.12
@@ -276,7 +326,7 @@ def match_tv_group(group: list[ParsedFile], season_override: int | None,
         ep = by_se[se]
         r.show, r.season, r.episode = top.name, se[0], se[1]
         r.episode_title = ep.name
-        factor = 1.0 if h.source in ("sxxeyy", "nxnn") else 0.95
+        factor = 0.95 if h.source == "bare" else 1.0   # E01 / 第01集 are explicit markers
         r.confidence = max(0.0, min(1.0, (base_conf - penalty) * factor))
     return results
 
@@ -291,8 +341,10 @@ def _title_variants(title: str, short: str) -> list[str]:
     toks = title.split()
     latin = " ".join(t for t in toks if not _CJK.search(t))
     cjk = " ".join(t for t in toks if _CJK.search(t))
+    # '庆余年2' -> also try '庆余年' (sequel digit names the season, not the show)
+    cjk_base = re.sub(r"(?<=[㐀-䶿一-鿿])[2-9](?=\s|$)", "", cjk) if cjk else ""
     out: list[str] = []
-    for q in (title, latin, cjk, short):
+    for q in (title, latin, cjk, cjk_base, short):
         if q and normalize(q) and normalize(q) not in {normalize(x) for x in out}:
             out.append(q)
     return out
@@ -404,6 +456,17 @@ def match_all(files: list[ParsedFile], *, kind: str = "auto",
                 out_.append(a)
         return out_
 
+    def run_tv(grp: list[ParsedFile], soft: bool) -> list[MatchResult]:
+        """TVmaze first for Latin titles, TMDb first for CJK titles; the second
+        source is consulted whenever the first leaves anything below auto-accept."""
+        cjk = any(has_cjk(q) for q in _group_queries(grp))
+        order = [s for s in ([TMDB_TV, TVMAZE] if cjk else [TVMAZE, TMDB_TV]) if s.available]
+        res = match_tv_group(grp, season, soft, source=order[0])
+        if len(order) > 1 and not all(r.confidence >= AUTO for r in res):
+            res = merge(res, match_tv_group(grp, season, soft, source=order[1]),
+                        f"— also tried {order[1].label} —")
+        return res
+
     out: list[MatchResult] = []
     groups = group_files(files)
     # folder-level anime evidence: 'Frieren 2nd Season - 05' next to fansub files is anime too
@@ -420,11 +483,10 @@ def match_all(files: list[ParsedFile], *, kind: str = "auto",
             res = match_anime_group(videos or group, season)
             if all(r.confidence < REVIEW and r.show is None for r in res):
                 # AniList knew nothing; a western show with fansub-style naming
-                res = merge(res, match_tv_group(videos or group, season, soft=False),
-                            "— fell back to TV provider —")
+                res = merge(res, run_tv(videos or group, soft=False), "— fell back to TV providers —")
             gkind = "tv"
         elif gkind in ("tv", "tv?"):
-            res = match_tv_group(videos or group, season, soft=(gkind == "tv?"))
+            res = run_tv(videos or group, soft=(gkind == "tv?"))
             if kind == "auto" and all(r.confidence < REVIEW for r in res):
                 # TV provider had nothing convincing; maybe it is anime without a group tag
                 res = merge(res, match_anime_group(videos or group, season),
