@@ -905,10 +905,19 @@ class MainWindow(QMainWindow):
 
     def _update_downloaded(self, path) -> None:
         if path is None:
+            self.statusBar().clearMessage()
             QMessageBox.warning(self, "Update failed",
                                 "The download did not finish. Try again later.")
             return
-        ota.launch_installer(path)
+        try:
+            ota.launch_installer(path)
+        except OSError as e:
+            self.statusBar().clearMessage()
+            QMessageBox.warning(
+                self, "Update failed",
+                f"Could not start the installer ({e}).\n\n"
+                f"It was saved to:\n{path}\nRun it yourself to update.")
+            return
         QApplication.quit()
 
 

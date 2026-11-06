@@ -8,7 +8,6 @@ C:\\Program Files\\MediaRenamer and relaunches the app.
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
 import tempfile
 import urllib.request
@@ -85,11 +84,15 @@ def download(upd: Update, progress=None) -> Path:
 def launch_installer(setup: Path) -> None:
     """Start the silent installer and return; the caller should exit the app.
 
-    The installer elevates itself (UAC prompt), waits for this process to
-    exit, swaps the files in place, and relaunches the app.
+    The setup exe requests elevation in its manifest, so it must be started
+    with ShellExecute: CreateProcess (subprocess) fails with WinError 740
+    'requires elevation' instead of showing the UAC prompt.
     """
-    subprocess.Popen([str(setup), "/S"], close_fds=True,
-                     creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP)
+    import ctypes
+    rc = ctypes.windll.shell32.ShellExecuteW(None, "open", str(setup), "/S",
+                                             str(setup.parent), 1)
+    if rc <= 32:
+        raise OSError(f"ShellExecute failed with code {rc}")
 
 
 def running_frozen() -> bool:
