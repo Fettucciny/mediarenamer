@@ -51,6 +51,10 @@ def undo_last() -> tuple[int, list[str]]:
             dst.parent.mkdir(parents=True, exist_ok=True)
             src.rename(dst)
             undone += 1
+            try:
+                src.parent.rmdir()   # drop a movie folder the apply created, if now empty
+            except OSError:
+                pass
         except OSError as e:
             errors.append(f"{src}: {e}")
     JOURNAL.write_text("\n".join(lines[:-1]) + ("\n" if len(lines) > 1 else ""),

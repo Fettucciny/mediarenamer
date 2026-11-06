@@ -98,7 +98,7 @@ class TestGui(unittest.TestCase):
         # Plex file form and the FileBot-style folder form
         self.assertTrue(all(r.new_name.startswith("Severance (2022) - S01E0") for r in sev.model.rows),
                         [r.new_name for r in sev.model.rows])
-        self.assertTrue(sev.section.folder_new_name and sev.section.folder_new_name.startswith("Severance (2022) {"),
+        self.assertTrue(sev.section.folder_new_name and sev.section.folder_new_name.startswith("Severance {"),
                         sev.section.folder_new_name)
 
         sev.table.selectRow(0)
@@ -108,7 +108,7 @@ class TestGui(unittest.TestCase):
 
         win.apply_panel(sev)
         self.app.processEvents()
-        new_folder = next(p for p in self.tmp.iterdir() if p.name.startswith("Severance (2022) {"))
+        new_folder = next(p for p in self.tmp.iterdir() if p.name.startswith("Severance {"))
         renamed = sorted(p.name for p in new_folder.iterdir())
         self.assertTrue(all(n.startswith("Severance (2022) - S01E0") for n in renamed), renamed)
         self.assertNotIn(sev, win.visible_panels, "finished column should retire")

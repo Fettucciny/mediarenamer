@@ -222,13 +222,14 @@ class Section:
     title: str
     results: list[MatchResult]
     root: Path | None            # dropped folder this section came from, if any
-    folder_new_name: str | None  # planned Plex folder name, when the root holds just this title
+    folder_new_name: str | None  # planned folder name for folder_src, if a rename is planned
     kind: str = ""
     subtitle: str = ""
+    folder_src: Path | None = None   # the folder being renamed: the root, or a movie's own subfolder
 
 
 def split_sections(results: list[MatchResult], roots: list[Path], prefer_original: bool,
-                   rename_folders: bool) -> list[Section]:
+                   rename_folders: bool, movie_scheme: str = "filebot") -> list[Section]:
     """One section per (dropped root, title). Unmatched files group by their folder."""
     dirs = [r for r in roots if r.is_dir()]
 
@@ -285,11 +286,20 @@ def split_sections(results: list[MatchResult], roots: list[Path], prefer_origina
             title += f" ({first.movie_year})" if first.movie_year else ""
             kind = "movie"
             sub = f"{len(rows)} file(s) · tmdb-{first.tmdb_id}" if first.tmdb_id else f"{len(rows)} file(s)"
-        folder_new = None
-        if rename_folders and root is not None and len(titles_per_root.get(root_s, ())) == 1 and kind != "unmatched":
-            folder_new = planned_folder_name(rows, root, prefer_original)
+        folder_new, folder_src = None, None
+        if rename_folders and root is not None and kind != "unmatched":
+            if len(titles_per_root.get(root_s, ())) == 1:
+                folder_new = planned_folder_name(results, root, prefer_original, movie_scheme)
+                folder_src = root if folder_new else None
+            elif kind == "movie":
+                # a movie in its own subfolder of a shared drop still gets its folder renamed
+                parents = {r.file.path.parent for r in rows}
+                if len(parents) == 1 and (par := parents.pop()) != root:
+                    folder_new = planned_folder_name(results, par, prefer_original, movie_scheme)
+                    folder_src = par if folder_new else None
         sections.append(Section(title=title or "?", results=rows, root=root,
-                                folder_new_name=folder_new, kind=kind, subtitle=sub))
+                                folder_new_name=folder_new, kind=kind, subtitle=sub,
+                                folder_src=folder_src))
     return sections
 
 
@@ -391,8 +401,9 @@ class SectionPanel(QFrame):
         self.apply_btn.setEnabled(n > 0)
         self.apply_btn.setText(f"Apply ({n})" if n else "Apply")
         root, new = self.section.root, self.section.folder_new_name
-        if root is not None and new and not self.model.counts()["DONE"]:
-            self.folder_label.setText(f"Folder: {root.name}  →  {new}")
+        src_dir = self.section.folder_src or root
+        if src_dir is not None and new and not self.model.counts()["DONE"]:
+            self.folder_label.setText(f"Folder: {src_dir.name}  →  {new}")
         elif root is not None and self.model.counts()["DONE"]:
             self.folder_label.setText(f"Folder: {root.name}")
         else:
@@ -739,7 +750,8 @@ class MainWindow(QMainWindow):
         for p in list(self.visible_panels):
             self._remove_panel(p)
         self.queued = split_sections(results, self.paths, bool(self.cfg.get("prefer_original_titles")),
-                                     bool(self.cfg.get("rename_folders", True)))
+                                     bool(self.cfg.get("rename_folders", True)),
+                                     self.cfg.get("movie_scheme", "filebot"))
         self._fill_slots()
         self._busy(False, f"Matched {len(results)} file(s) in {len(self.queued) + len(self.visible_panels)} title(s)")
         if self.visible_panels and self.visible_panels[0].model.rows:
@@ -804,7 +816,7 @@ class MainWindow(QMainWindow):
         selected = panel.model.selected_results()
         if not selected:
             return
-        roots = [panel.section.root] if (panel.section.root and panel.section.folder_new_name
+        roots = [panel.section.root] if (panel.section.root
                                          and self.cfg.get("rename_folders", True)) else []
         # the folder is renamed only once every file of this title is accepted
         if roots and len(selected) < panel.model.pending():
@@ -821,11 +833,13 @@ class MainWindow(QMainWindow):
         n, errors = apply_ops(ops)
         failed = {e.split(":")[0].casefold() for e in errors}
         panel.model.mark_done({str(o.src).casefold() for o in ops if o.result is not None} - failed)
-        folder_op = next((o for o in ops if o.result is None), None)
-        if folder_op and str(folder_op.src).casefold() not in failed:
+        for folder_op in (o for o in ops if o.result is None):
+            if str(folder_op.src).casefold() in failed:
+                continue
             # files now live under the new folder name; keep paths truthful
             self.paths = [folder_op.dst if p == folder_op.src else p for p in self.paths]
-            panel.section.root = folder_op.dst
+            if panel.section.root == folder_op.src:
+                panel.section.root = folder_op.dst
             panel.section.folder_new_name = None
         panel.refresh()
         self._refresh_counts()

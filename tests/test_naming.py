@@ -71,13 +71,9 @@ class TestTvPlexScheme(unittest.TestCase):
 
 
 class TestFolderName(unittest.TestCase):
-    def test_tv_folder_prefers_tmdb_then_tvdb(self):
+    def test_tv_folder_has_id_but_no_year(self):
         r = episode("x.mkv", "Severance", 2022, 1, 1, None, {"tvmaze": 44201, "tvdb": 371980})
-        self.assertEqual(plan.folder_name(r), "Severance (2022) {tvdb-371980}")
-
-    def test_movie_folder(self):
-        r = movie("x.mkv", "Dune: Part Two", 2024, 693134)
-        self.assertEqual(plan.folder_name(r), "Dune - Part Two (2024) {tmdb-693134}")
+        self.assertEqual(plan.folder_name(r), "Severance {tvdb-371980}")
 
     def test_cross_provider_ids_are_one_title(self):
         # season folders inside one show folder: S1 matched by TVmaze, S2 by
@@ -89,7 +85,7 @@ class TestFolderName(unittest.TestCase):
         groups = plan.title_groups([a, b])
         self.assertEqual(groups[id(a)], groups[id(b)])
         self.assertTrue(plan.planned_folder_name([a, b], ROOT / "Show")
-                        .startswith("Severance (2022) {"))
+                        .startswith("Severance {"))
 
     def test_same_name_and_year_merge_without_shared_ids(self):
         a = episode("Show/Season 1/a.S01E01.mkv", "Severance", 2022, 1, 1, None, {"tvmaze": 44933})
@@ -107,7 +103,63 @@ class TestFolderName(unittest.TestCase):
         a = episode("Show/a.S01E01.mkv", "Severance", 2022, 1, 1, None, {"tvdb": 1})
         b = episode("Show/b.S01E01.mkv", "Shogun", 2024, 1, 1, None, {"tvdb": 2})
         self.assertIsNone(plan.planned_folder_name([a, b], ROOT / "Show"))
-        self.assertEqual(plan.planned_folder_name([a], ROOT / "Show"), "Severance (2022) {tvdb-1}")
+        self.assertEqual(plan.planned_folder_name([a], ROOT / "Show"), "Severance {tvdb-1}")
+
+
+class TestMovieFoldering(unittest.TestCase):
+    """Every movie ends in a folder named like its video file."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = Path(tempfile.mkdtemp(prefix="mr_plan_"))
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _movie_at(self, rel: str, title: str, year: int, tmdb_id: int):
+        p = self.tmp / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"")
+        r = MatchResult(file=parse_file(p, self.tmp), kind="movie", confidence=0.9)
+        r.movie_title, r.movie_year, r.tmdb_id = title, year, tmdb_id
+        plan._director_cache[tmdb_id] = None
+        return r
+
+    def test_loose_movie_gets_its_own_subfolder(self):
+        a = self._movie_at("drop/Heat.1995.mkv", "Heat", 1995, 949)
+        b = self._movie_at("drop/Alien.1979.mkv", "Alien", 1979, 348)
+        ops = build_ops = plan.build_plan([a, b], rename_roots=[self.tmp / "drop"])
+        by_src = {o.src.name: o for o in build_ops if o.result is not None}
+        self.assertEqual(by_src["Heat.1995.mkv"].dst.parent.name, "Heat (1995)")
+        self.assertEqual(by_src["Alien.1979.mkv"].dst.parent.name, "Alien (1979)")
+        self.assertFalse([o for o in ops if o.result is None], "no folder renames expected")
+        self.assertEqual(a.new_name, "Heat (1995)\\Heat (1995).mkv")
+
+    def test_movie_in_own_folder_renames_the_folder(self):
+        a = self._movie_at("drop/Heat 1995 BluRay/Heat.1995.1080p.x265-GRP.mkv", "Heat", 1995, 949)
+        ops = plan.build_plan([a], rename_roots=[self.tmp / "drop"])
+        folder_ops = [o for o in ops if o.result is None]
+        self.assertEqual(len(folder_ops), 1)
+        self.assertEqual(folder_ops[0].src, self.tmp / "drop" / "Heat 1995 BluRay")
+        self.assertEqual(folder_ops[0].dst.name, "Heat (1995) 1080p.x265-GRP")
+        # the file is renamed in place; the folder op then renames its folder
+        self.assertEqual(a.new_name, "Heat (1995) 1080p.x265-GRP.mkv")
+        self.assertEqual(plan.planned_folder_name([a], self.tmp / "drop" / "Heat 1995 BluRay"),
+                         "Heat (1995) 1080p.x265-GRP")
+
+    def test_structural_parent_is_never_renamed(self):
+        a = self._movie_at("Movies/Heat.1995.mkv", "Heat", 1995, 949)
+        ops = plan.build_plan([a], rename_roots=[self.tmp / "Movies"])
+        self.assertFalse([o for o in ops if o.result is None])
+        self.assertEqual(ops[0].dst.parent.name, "Heat (1995)")
+
+    def test_shared_folder_on_disk_blocks_rename(self):
+        a = self._movie_at("drop/Heat.1995.mkv", "Heat", 1995, 949)
+        (self.tmp / "drop" / "unrelated.mkv").write_bytes(b"")
+        ops = plan.build_plan([a], rename_roots=[self.tmp / "drop"])
+        self.assertFalse([o for o in ops if o.result is None])
+        self.assertEqual(ops[0].dst.parent.name, "Heat (1995)")
 
 
 if __name__ == "__main__":

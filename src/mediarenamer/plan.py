@@ -8,8 +8,10 @@ Naming schemes (chosen in settings):
         'simple'   -> Title (Year)
 
 Files stay where they are unless an output folder is given. A dropped folder
-that holds exactly one title is renamed to 'Title (Year) {tmdb-ID}', the Plex
-folder form, so a later run can re-identify it from the ID alone.
+that holds exactly one show is renamed to 'Show {tvdb-ID}' (no year), so a
+later run can re-identify it from the ID alone. Every movie ends in a folder
+named exactly like its video file: the movie's own folder is renamed to that,
+and a loose movie gets a new subfolder created around it.
 """
 from __future__ import annotations
 
@@ -18,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .match import MatchResult
-from .parse import normalize
+from .parse import STRUCTURAL_FOLDERS, VIDEO_EXTS, normalize
 from .probe import probe
 from .providers import tmdb
 
@@ -161,18 +163,14 @@ def title_groups(results: list[MatchResult]) -> dict[int, tuple]:
 
 
 def folder_name(r: MatchResult, prefer_original: bool = False) -> str:
-    """Plex folder form: 'Title (Year) {tmdb-123}'."""
+    """TV folder form: 'Show {tvdb-123}' (name and database id, no year)."""
     if r.kind == "tv":
         name = r.show_original if prefer_original and r.show_original else r.show
-        year = r.show_year
         ids = r.show_ids or {}
     else:
         name = r.movie_original if prefer_original and r.movie_original else r.movie_title
-        year = r.movie_year
         ids = {"tmdb": r.tmdb_id} if r.tmdb_id else {}
     out = sanitize(name or "")
-    if year:
-        out += f" ({year})"
     for k in ("tmdb", "tvdb", "anilist", "tvmaze", "imdb"):
         if ids.get(k):
             out += f" {{{k}-{ids[k]}}}"
@@ -187,14 +185,86 @@ class Op:
     result: MatchResult | None
 
 
+def _movie_plan(results: list[MatchResult], groups: dict[int, tuple], movie_scheme: str,
+                prefer_original: bool, rename_roots: list[Path] | None):
+    """Every movie ends in a folder named like its video file.
+
+    Returns (target_dir_by_result_id, parent_renames). For each (parent dir,
+    movie) pair: when the parent holds only that movie, sits inside a dropped
+    root and is not a structural name (Movies, Downloads, ...), the parent is
+    renamed to the video's stem; otherwise a subfolder with that stem is
+    created next to the file and the movie's files move into it.
+    """
+    roots = [r for r in (rename_roots or []) if r.is_dir()]
+    keys_in_parent: dict[Path, set] = {}
+    unmatched_parent: set[Path] = set()
+    for r in results:
+        p = r.file.path.parent
+        if id(r) in groups:
+            keys_in_parent.setdefault(p, set()).add(groups[id(r)])
+        else:
+            unmatched_parent.add(p)
+
+    by_pk: dict[tuple[Path, tuple], list[MatchResult]] = {}
+    for r in results:
+        key = groups.get(id(r))
+        if key and key[0] == "movie":
+            by_pk.setdefault((r.file.path.parent, key), []).append(r)
+
+    target: dict[int, Path] = {}
+    renames: list[tuple[Path, Path]] = []
+    for (parent, key), rs in by_pk.items():
+        video = next((x for x in rs if x.file.path.suffix.casefold() in VIDEO_EXTS), None)
+        if video is None:
+            continue
+        stem = sanitize(movie_stem(video, movie_scheme, prefer_original))
+        if not stem:
+            continue
+        sole_title = (keys_in_parent.get(parent) == {key} and parent not in unmatched_parent
+                      and not _other_videos_on_disk(parent, rs))
+        in_roots = any(_is_under(parent, root) for root in roots)
+        structural = bool(STRUCTURAL_FOLDERS.match(parent.name))
+        if sole_title and in_roots and not structural and parent.parent != parent:
+            for x in rs:
+                target[id(x)] = parent
+            dst = parent.with_name(stem)
+            if dst != parent and not dst.exists():
+                renames.append((parent, dst))
+        else:
+            for x in rs:
+                target[id(x)] = parent / stem
+    return target, renames
+
+
+def _other_videos_on_disk(parent: Path, group: list[MatchResult]) -> bool:
+    """True when the folder holds video files that are not this movie's own —
+    the ground truth guard against renaming a shared folder after one movie.
+    Structural subfolders (Sample, Subs, Extras...) are the movie's own."""
+    ours = {str(r.file.path).casefold() for r in group}
+    try:
+        for child in parent.iterdir():
+            if child.is_file():
+                if child.suffix.casefold() in VIDEO_EXTS and str(child).casefold() not in ours:
+                    return True
+            elif child.is_dir() and not STRUCTURAL_FOLDERS.match(child.name):
+                if any(g.suffix.casefold() in VIDEO_EXTS for g in child.glob("*")):
+                    return True
+    except OSError:
+        return True
+    return False
+
+
 def build_plan(results: list[MatchResult], output: Path | None = None,
                prefer_original: bool = False, tv_scheme: str = "plex",
                movie_scheme: str = "filebot", rename_roots: list[Path] | None = None) -> list[Op]:
     """Compute target paths and set r.new_name. Files stay in place unless `output`
-    is given. Each folder in `rename_roots` that contains exactly one title among
-    the given results gets a final rename op to the Plex folder form."""
+    is given. A folder in `rename_roots` holding exactly one show is renamed to
+    'Show {tvdb-ID}'; movie folders are created or renamed by _movie_plan."""
     ops: list[Op] = []
     taken: set[str] = set()
+    groups = title_groups(results)
+    movie_target, movie_renames = ({}, []) if output else _movie_plan(
+        results, groups, movie_scheme, prefer_original, rename_roots)
     for r in results:
         if r.status == "UNMATCHED":
             continue
@@ -207,7 +277,10 @@ def build_plan(results: list[MatchResult], output: Path | None = None,
             subdir = folder_name(r, prefer_original)
         else:
             continue
-        folder = (output / subdir) if output else src.parent
+        if output:
+            folder = output / subdir
+        else:
+            folder = movie_target.get(id(r), src.parent)
         dst = folder / f"{stem}{src.suffix.casefold()}"
         n = 1
         while str(dst).casefold() in taken or (dst.exists() and dst != src):
@@ -215,19 +288,21 @@ def build_plan(results: list[MatchResult], output: Path | None = None,
             dst = folder / f"{stem} ({n}){src.suffix.casefold()}"
         taken.add(str(dst).casefold())
         if dst != src:
-            r.new_name = dst.name
+            r.new_name = dst.name if dst.parent == src.parent else f"{dst.parent.name}\\{dst.name}"
             ops.append(Op(src=src, dst=dst, result=r))
         else:
             r.new_name = src.name
 
-    groups = title_groups(results)
+    for src_dir, dst_dir in movie_renames:
+        ops.append(Op(src=src_dir, dst=dst_dir, result=None))
+
     for root in rename_roots or []:
         if output or not root.is_dir() or root.parent == root:
             continue
         inside = [r for r in results if id(r) in groups and _is_under(r.file.path, root)]
         keys = {groups[id(r)] for r in inside}
-        if len(keys) != 1:
-            continue
+        if len(keys) != 1 or next(iter(keys))[0] != "tv":
+            continue   # movie folders are handled by _movie_plan
         new_name = folder_name(inside[0], prefer_original)
         dst = root.parent / new_name
         if new_name and dst != root and not dst.exists():
@@ -235,11 +310,18 @@ def build_plan(results: list[MatchResult], output: Path | None = None,
     return ops
 
 
-def planned_folder_name(results: list[MatchResult], root: Path, prefer_original: bool = False) -> str | None:
+def planned_folder_name(results: list[MatchResult], root: Path, prefer_original: bool = False,
+                        movie_scheme: str = "filebot") -> str | None:
     groups = title_groups(results)
     inside = [r for r in results if id(r) in groups and _is_under(r.file.path, root)]
     keys = {groups[id(r)] for r in inside}
     if len(keys) != 1:
+        return None
+    if next(iter(keys))[0] == "movie":
+        _, renames = _movie_plan(results, groups, movie_scheme, prefer_original, [root])
+        for src_dir, dst_dir in renames:
+            if _is_under(src_dir, root):
+                return dst_dir.name
         return None
     name = folder_name(inside[0], prefer_original)
     return name if name and name != root.name else None
