@@ -31,7 +31,7 @@ from ..cli import scan
 from ..journal import apply_ops, undo_last
 from ..match import MatchResult, match_all
 from ..parse import COMPANION_EXTS, VIDEO_EXTS, parse_file
-from ..plan import build_plan, planned_folder_name, title_key
+from ..plan import build_plan, planned_folder_name, title_groups
 
 MEDIA_EXTS = VIDEO_EXTS | COMPANION_EXTS
 MAX_VISIBLE = 4
@@ -246,9 +246,10 @@ def split_sections(results: list[MatchResult], roots: list[Path], prefer_origina
     buckets: dict[tuple, list[MatchResult]] = {}
     order: list[tuple] = []
     root_paths: dict[str, Path] = {}
+    groups = title_groups(results)
     for r in results:
         root = root_of(r.file.path)
-        key = title_key(r) or ("?", str(r.file.path.parent).casefold())
+        key = groups.get(id(r)) or ("?", str(r.file.path.parent).casefold())
         k = (str(root).casefold() if root else "", key)
         if root is not None:
             root_paths[k[0]] = root

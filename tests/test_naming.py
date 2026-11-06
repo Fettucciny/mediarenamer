@@ -79,6 +79,30 @@ class TestFolderName(unittest.TestCase):
         r = movie("x.mkv", "Dune: Part Two", 2024, 693134)
         self.assertEqual(plan.folder_name(r), "Dune - Part Two (2024) {tmdb-693134}")
 
+    def test_cross_provider_ids_are_one_title(self):
+        # season folders inside one show folder: S1 matched by TVmaze, S2 by
+        # TMDb -- disjoint primary ids, shared tvdb, one show
+        a = episode("Show/Season 1/a.S01E01.mkv", "Severance", 2022, 1, 1, None,
+                    {"tvmaze": 44933, "tvdb": 371980})
+        b = episode("Show/Season 2/01.mkv", "Severance", 2022, 2, 1, None,
+                    {"tmdb": 95396, "tvdb": 371980})
+        groups = plan.title_groups([a, b])
+        self.assertEqual(groups[id(a)], groups[id(b)])
+        self.assertTrue(plan.planned_folder_name([a, b], ROOT / "Show")
+                        .startswith("Severance (2022) {"))
+
+    def test_same_name_and_year_merge_without_shared_ids(self):
+        a = episode("Show/Season 1/a.S01E01.mkv", "Severance", 2022, 1, 1, None, {"tvmaze": 44933})
+        b = episode("Show/Season 2/01.mkv", "Severance", 2022, 2, 1, None, {"tmdb": 95396})
+        groups = plan.title_groups([a, b])
+        self.assertEqual(groups[id(a)], groups[id(b)])
+
+    def test_same_name_different_year_stay_separate(self):
+        a = episode("x/a.S01E01.mkv", "Shameless", 2004, 1, 1, None, {})
+        b = episode("x/b.S01E01.mkv", "Shameless", 2011, 1, 1, None, {})
+        groups = plan.title_groups([a, b])
+        self.assertNotEqual(groups[id(a)], groups[id(b)])
+
     def test_folder_requires_single_title(self):
         a = episode("Show/a.S01E01.mkv", "Severance", 2022, 1, 1, None, {"tvdb": 1})
         b = episode("Show/b.S01E01.mkv", "Shogun", 2024, 1, 1, None, {"tvdb": 2})

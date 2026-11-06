@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mediarenamer"
-version = "0.1.0"
+version = "0.1.1"
 description = "Evidence-based media file renamer: matches TV episodes and movies against online databases with explainable decisions"
 requires-python = ">=3.10"
 readme = "README.md"

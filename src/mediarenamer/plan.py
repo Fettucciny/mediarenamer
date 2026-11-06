@@ -96,18 +96,68 @@ def movie_stem(r: MatchResult, scheme: str, prefer_original: bool) -> str:
 
 
 def title_key(r: MatchResult):
-    """What a section / folder is 'about': one database entry (or normalized title)."""
+    """What a section / folder is 'about': one database entry (or normalized title).
+
+    Different providers know the same show under different ids (TVmaze has no
+    TMDb id, TMDb has no TVmaze id), so comparing single keys splits one show
+    into several. Use title_groups() to compare across results; this returns
+    one representative key for display and fallback bucketing.
+    """
+    toks = _identity_tokens(r)
+    return toks[0] if toks else None
+
+
+def _identity_tokens(r: MatchResult) -> list[tuple] | None:
+    """Every identity this result is known by: each database id, plus the
+    normalized (title, year). Two results that share any token are one title."""
     if r.status == "UNMATCHED" or r.kind not in ("tv", "movie"):
         return None
+    toks: list[tuple] = []
     if r.kind == "tv":
         ids = r.show_ids or {}
-        for k in ("tmdb", "tvdb", "anilist", "tvmaze", "imdb"):
+        for k in ("tmdb", "tvdb", "anilist", "mal", "tvmaze", "imdb"):
             if ids.get(k):
-                return ("tv", k, str(ids[k]))
-        return ("tv", "name", normalize(r.show or ""))
-    if r.tmdb_id:
-        return ("movie", "tmdb", str(r.tmdb_id))
-    return ("movie", "name", normalize(r.movie_title or ""))
+                toks.append(("tv", k, str(ids[k])))
+        if r.show:
+            toks.append(("tv", "name", normalize(r.show), str(r.show_year or "")))
+    else:
+        if r.tmdb_id:
+            toks.append(("movie", "tmdb", str(r.tmdb_id)))
+        if r.movie_title:
+            toks.append(("movie", "name", normalize(r.movie_title), str(r.movie_year or "")))
+    return toks or None
+
+
+def title_groups(results: list[MatchResult]) -> dict[int, tuple]:
+    """Map id(result) -> canonical title key, merging results that share any
+    database id or the same normalized (title, year) across providers."""
+    parent: dict[tuple, tuple] = {}
+
+    def find(x: tuple) -> tuple:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    toks_of: dict[int, list[tuple]] = {}
+    for r in results:
+        toks = _identity_tokens(r)
+        if not toks:
+            continue
+        toks_of[id(r)] = toks
+        for t in toks:
+            parent.setdefault(t, t)
+        for t in toks[1:]:
+            ra, rb = find(toks[0]), find(t)
+            if ra != rb:
+                parent[rb] = ra
+
+    # one deterministic key per merged group: the smallest token in it
+    members: dict[tuple, set] = {}
+    for toks in toks_of.values():
+        members.setdefault(find(toks[0]), set()).update(toks)
+    canon = {root: min(ts) for root, ts in members.items()}
+    return {rid: canon[find(toks[0])] for rid, toks in toks_of.items()}
 
 
 def folder_name(r: MatchResult, prefer_original: bool = False) -> str:
@@ -170,12 +220,12 @@ def build_plan(results: list[MatchResult], output: Path | None = None,
         else:
             r.new_name = src.name
 
+    groups = title_groups(results)
     for root in rename_roots or []:
         if output or not root.is_dir() or root.parent == root:
             continue
-        inside = [r for r in results if r.status != "UNMATCHED" and title_key(r)
-                  and _is_under(r.file.path, root)]
-        keys = {title_key(r) for r in inside}
+        inside = [r for r in results if id(r) in groups and _is_under(r.file.path, root)]
+        keys = {groups[id(r)] for r in inside}
         if len(keys) != 1:
             continue
         new_name = folder_name(inside[0], prefer_original)
@@ -186,8 +236,9 @@ def build_plan(results: list[MatchResult], output: Path | None = None,
 
 
 def planned_folder_name(results: list[MatchResult], root: Path, prefer_original: bool = False) -> str | None:
-    inside = [r for r in results if r.status != "UNMATCHED" and title_key(r) and _is_under(r.file.path, root)]
-    keys = {title_key(r) for r in inside}
+    groups = title_groups(results)
+    inside = [r for r in results if id(r) in groups and _is_under(r.file.path, root)]
+    keys = {groups[id(r)] for r in inside}
     if len(keys) != 1:
         return None
     name = folder_name(inside[0], prefer_original)
