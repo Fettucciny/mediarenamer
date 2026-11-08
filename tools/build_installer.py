@@ -24,8 +24,12 @@ def run(*cmd: str) -> None:
 
 
 def main() -> int:
+    icon = ROOT / "assets" / "icon.ico"
+    gui_icon = ROOT / "src" / "mediarenamer" / "gui" / "icon.ico"
     run(sys.executable, "-m", "PyInstaller", "--noconfirm", "--windowed",
         "--name", "MediaRenamer", "--collect-submodules", "mediarenamer",
+        "--icon", str(icon),
+        "--add-data", f"{gui_icon};mediarenamer/gui",
         "-p", "src", "--specpath", "build_spec", "tools/entry_gui.py")
 
     app_dir = ROOT / "dist" / "MediaRenamer"
@@ -40,7 +44,7 @@ def main() -> int:
     ver_file.write_text(__version__)
 
     run(sys.executable, "-m", "PyInstaller", "--noconfirm", "--onefile",
-        "--name", "MediaRenamer-Setup", "--uac-admin",
+        "--name", "MediaRenamer-Setup", "--uac-admin", "--icon", str(icon),
         "--add-data", f"{app_zip};.", "--add-data", f"{ver_file};.",
         "--specpath", "build_spec", "tools/installer_stub.py")
 

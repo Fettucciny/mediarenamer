@@ -1,0 +1,25 @@
+<svg width="256" height="256" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1fb6a6"/><stop offset="1" stop-color="#0e7f8f"/>
+    </linearGradient>
+    <linearGradient id="front" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffd166"/><stop offset="1" stop-color="#f4a63a"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="120" height="120" rx="28" fill="url(#bg)"/>
+  <!-- folder back + tab -->
+  <path d="M20 44 a6 6 0 0 1 6 -6 h20 l9 10 h47 a6 6 0 0 1 6 6 v38 a8 8 0 0 1 -8 8 H28 a8 8 0 0 1 -8 -8 Z" fill="#0a5b66"/>
+  <!-- filmstrip sheet, slightly tilted -->
+  <g transform="rotate(-8 64 56)">
+    <rect x="38" y="26" width="52" height="48" rx="5" fill="#15162e"/>
+    <g fill="#e9ecf4">
+      <rect x="43" y="31" width="6" height="7" rx="1.5"/><rect x="43" y="44" width="6" height="7" rx="1.5"/><rect x="43" y="57" width="6" height="7" rx="1.5"/>
+      <rect x="79" y="31" width="6" height="7" rx="1.5"/><rect x="79" y="44" width="6" height="7" rx="1.5"/><rect x="79" y="57" width="6" height="7" rx="1.5"/>
+      <rect x="54" y="32" width="20" height="14" rx="2"/>
+      <rect x="54" y="52" width="20" height="14" rx="2" opacity="0.55"/>
+    </g>
+  </g>
+  <!-- folder front -->
+  <path d="M20 64 a6 6 0 0 1 6 -6 h76 a6 6 0 0 1 6 6 v22 a8 8 0 0 1 -8 8 H28 a8 8 0 0 1 -8 -8 Z" fill="url(#front)"/>
+</svg>

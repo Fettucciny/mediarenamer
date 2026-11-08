@@ -16,7 +16,8 @@ from pathlib import Path
 
 from PySide6.QtCore import (QAbstractTableModel, QEasingCurve, QModelIndex, QPoint,
                             QPropertyAnimation, Qt, QThread, Signal)
-from PySide6.QtGui import QAction, QBrush, QColor, QDesktopServices, QFont, QKeySequence
+from PySide6.QtGui import (QAction, QBrush, QColor, QDesktopServices, QFont, QIcon,
+                           QKeySequence)
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog,
                                QDialogButtonBox, QFileDialog, QFormLayout, QFrame,
                                QGraphicsOpacityEffect, QHBoxLayout, QHeaderView, QInputDialog,
@@ -32,6 +33,9 @@ from ..journal import apply_ops, undo_last
 from ..match import MatchResult, match_all
 from ..parse import COMPANION_EXTS, VIDEO_EXTS, parse_file
 from ..plan import build_plan, planned_folder_name, title_groups
+from .style import apply_theme
+
+ICON_FILE = Path(__file__).resolve().parent / "icon.ico"
 
 MEDIA_EXTS = VIDEO_EXTS | COMPANION_EXTS
 MAX_VISIBLE = 4
@@ -321,8 +325,7 @@ class SectionPanel(QFrame):
         self.section = section
         self.model = ResultsModel(section.results)
         self.setFrameShape(QFrame.Shape.StyledPanel)
-        self.setObjectName("SectionPanel")
-        self.setStyleSheet("#SectionPanel { border: 1px solid palette(mid); border-radius: 6px; }")
+        self.setObjectName("SectionPanel")   # styled by the app-wide theme
         self._effect: QGraphicsOpacityEffect | None = None
         self._anim: QPropertyAnimation | None = None
 
@@ -383,6 +386,7 @@ class SectionPanel(QFrame):
             [i for i in range(len(self.model.rows)) if self.model.status_of(i) == "REVIEW"], True))
         foot.addWidget(accept)
         self.apply_btn = QPushButton("Apply")
+        self.apply_btn.setProperty("accent", True)
         self.apply_btn.setDefault(True)
         self.apply_btn.clicked.connect(lambda: self.apply_requested.emit(self))
         foot.addWidget(self.apply_btn)
@@ -945,6 +949,9 @@ def _existing_sibling(p: Path) -> Path | None:
 def main(argv: list[str] | None = None) -> int:
     app = QApplication(argv if argv is not None else sys.argv)
     app.setApplicationName("mediarenamer")
+    apply_theme(app)
+    if ICON_FILE.is_file():
+        app.setWindowIcon(QIcon(str(ICON_FILE)))
     cfg = config.load()
     config.apply_env(cfg)
     win = MainWindow(cfg)
